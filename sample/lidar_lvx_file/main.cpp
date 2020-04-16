@@ -27,6 +27,11 @@
 #include <algorithm>
 #include <string.h>
 #include "lvx_file.h"
+#include <string>
+#include <iostream>
+#include <ctime>
+#include "buttonrpc.hpp"
+#include <unistd.h>
 
 DeviceItem devices[kMaxLidarCount];
 LvxFileHandle lvx_file_handler;
@@ -40,9 +45,9 @@ int lvx_file_save_time = 10;
 bool is_finish_extrinsic_parameter = false;
 bool is_read_extrinsic_from_xml = false;
 uint8_t connected_lidar_count = 0;
-
+LvxBasePackDetail lidardata;
 #define FRAME_RATE 20
-
+int Continue = 1;
 
 using namespace std::chrono;
 
@@ -84,7 +89,12 @@ void GetLidarData(uint8_t handle, LivoxEthPacket *data, uint32_t data_num, void 
       LvxBasePackDetail packet;
       packet.device_index = handle;
       lvx_file_handler.BasePointsHandle(data, packet);
-      point_packet_list.push_back(packet);
+      lidardata = packet;
+      if (Continue) {
+        point_packet_list.push_back(lidardata);
+      }     
+      
+      // printf("point_packet_list get packet");
     }
   }
 }
@@ -332,6 +342,7 @@ int SetProgramOption(int argc, const char *argv[]) {
         i++;
       }
       free(sn_list_head);
+
       sn_list_head = nullptr;
       break;
     }
@@ -374,10 +385,10 @@ int SetProgramOption(int argc, const char *argv[]) {
   return 0;
 }
 
-int main(int argc, const char *argv[]) {
+int init_camera() {
 /** Set the program options. */
-  if (SetProgramOption(argc, argv))
-    return 0;
+  /* if (SetProgramOption(argc, argv))
+    return 0; */
 
   printf("Livox SDK initializing.\n");
 /** Initialize Livox-SDK. */
@@ -418,7 +429,7 @@ int main(int argc, const char *argv[]) {
   }
 
   WaitForExtrinsicParameter();
-
+#if 0
   printf("Start initialize lvx file.\n");
   if (!lvx_file_handler.InitLvxFile()) {
     Uninit();
@@ -457,4 +468,67 @@ int main(int argc, const char *argv[]) {
 
 /** Uninitialize Livox-SDK. */
   Uninit();
+  #endif
+}
+LvxBasePackDetail GetData(){
+  LvxBasePackDetail res;
+  {
+    std::unique_lock<std::mutex> lock(mtx);
+    res = lidardata;
+  }
+  // auto iter = point_packet_list.end();
+  
+  // printf("res: version %d, device_index %d, pack_size %d \n",iter.version,iter.device_index,iter.pack_size);
+  // for (; iter != point_packet_list.end(); iter++) {
+  // memcpy(&res, (void*)&(*iter), iter->pack_size);
+  
+  // point_packet_list.clear();
+  return res;
+}
+
+int WriteLvxFile()
+{
+	printf("Start initialize lvx file.\n");
+  if (!lvx_file_handler.InitLvxFile()) {
+    // Uninit();
+    return -1;
+  }
+
+  lvx_file_handler.InitLvxFileHeader();
+
+  int i = 0;
+  steady_clock::time_point last_time = steady_clock::now();
+  for (i = 0; i < lvx_file_save_time * FRAME_RATE; ++i) {
+    std::list<LvxBasePackDetail> point_packet_list_temp;
+    {
+      std::unique_lock<std::mutex> lock(mtx);
+      point_pack_condition.wait_for(lock, milliseconds(kDefaultFrameDurationTime) - (steady_clock::now() - last_time));
+      last_time = steady_clock::now();
+      point_packet_list_temp.swap(point_packet_list);
+    }
+    if(point_packet_list_temp.empty()) {
+      printf("Point cloud packet is empty.\n");
+      break;
+    }
+
+    printf("Finish save %d frame to lvx file.\n", i);
+    lvx_file_handler.SaveFrameToLvxFile(point_packet_list_temp);
+  }
+
+  lvx_file_handler.CloseLvxFile();
+
+  Continue = 0;
+}
+int main(int argc, const char *argv[])
+{
+	buttonrpc server;
+	server.as_server(3555);
+  server.bind("GetData", GetData);
+  init_camera();
+  // WriteLvxFile();
+	std::cout << "run rpc server on: " << 3555 << std::endl;
+	server.run();
+
+
+	return 0;
 }

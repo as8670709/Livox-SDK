@@ -13,4 +13,5 @@ endif()
 target_link_libraries(${DEMO_NAME}
         PRIVATE
         ${PROJECT_NAME}_static
-        )
+        /usr/local/lib/libzmq.so
+	)
